@@ -1,0 +1,9 @@
+clients: ronin
+sim:
+  pattern: ronin
+mounts:
+  - "/Users/kien.dang/coding/go/src/github.com/ethereum/hive/simulators/ronin:/ronin/chaindata"
+  - "/Users/kien.dang/coding/go/src/github.com/axieinfinity/ronin-dpos-contracts:/ronin/ronin-dpos-contracts"
+envs:
+  RONIN_CHAINDATA: "/Users/kien.dang/coding/go/src/github.com/ethereum/hive/simulators/ronin"
+  DPOS_DIR: "ronin-dpos-contracts"
