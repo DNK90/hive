@@ -208,16 +208,23 @@ func (r *Runner) run(ctx context.Context, sim string, env SimEnv) (SimResult, er
 			"HIVE_TEST_PATTERN": env.SimTestPattern,
 			"HIVE_RANDOM_SEED":  strconv.Itoa(env.SimRandomSeed),
 		},
+		Mounts: make([]docker.Mount, len(env.Mounts)),
 	}
 
-	if env.MountSource != "" && env.MountDestination != "" {
-		opts.Env["HIVE_MOUNT_SOURCE"] = env.MountSource
-		opts.Mounts = []docker.Mount{
-			{
-				Source:      env.MountSource,
-				Destination: env.MountDestination,
-				RW:          true,
-			},
+	for key, value := range env.Envs {
+		opts.Env[strings.ToUpper(key)] = value
+	}
+
+	for i, mount := range env.Mounts {
+		// split source and destination by ':'
+		s := strings.Split(mount, ":")
+		if len(s) != 2 {
+			continue
+		}
+		opts.Mounts[i] = docker.Mount{
+			Source:      s[0],
+			Destination: s[1],
+			RW:          true,
 		}
 	}
 

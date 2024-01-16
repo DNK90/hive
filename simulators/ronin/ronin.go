@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path"
 	"time"
 
 	"github.com/ethereum/hive/hivesim"
 	"github.com/ethereum/hive/internal/simapi"
+	"gopkg.in/inconshreveable/log15.v2"
 )
 
 var (
@@ -65,8 +70,18 @@ type block struct {
 }
 
 func loaderTest(t *hivesim.T) {
+	log15.Info("loading test")
+	// list all files or directory in current working dir
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	mountSource, ok := os.LookupEnv("HIVE_MOUNT_SOURCE")
+	for _, e := range entries {
+		t.Log(e.Name())
+	}
+
+	mountSource, ok := os.LookupEnv("RONIN_CHAINDATA")
 	if !ok {
 		t.Fatal("mount source is undefined")
 	}
@@ -93,7 +108,7 @@ func loaderTest(t *hivesim.T) {
 	params2["HIVE_BOOTNODE"] = enode
 
 	// start client2
-	client2 := t.StartClient("ronin", params2, hivesim.WithMounts(simapi.Mount{
+	t.StartClient("ronin", params2, hivesim.WithMounts(simapi.Mount{
 		RW:          true,
 		Source:      fmt.Sprintf("%s/node2", mountSource),
 		Destination: "/root/.ethereum/ronin",
@@ -101,20 +116,76 @@ func loaderTest(t *hivesim.T) {
 
 	period := time.NewTicker(3 * time.Second)
 	timeout := time.NewTicker(30 * time.Second)
-	for {
-		select {
-		case <-period.C:
-			t.Log("start getting latest block")
-			var b1, b2 block
-			if err = client1.RPC().Call(&b1, "eth_getBlockByNumber", "latest", false); err != nil {
-				t.Fatal("eth_getBlockByNumber call failed:", err)
+
+	// check if block is mined
+	if err = func() error {
+		for {
+			select {
+			case <-period.C:
+				var b block
+				t.Log("start getting latest block")
+				if err = client1.RPC().Call(&b, "eth_getBlockByNumber", "latest", false); err != nil {
+					return err
+				}
+				t.Log("finished getting block", "number", b.Number, "hash", b.Hash)
+				return nil
+			case <-timeout.C:
+				return errors.New("timed out")
 			}
-			if err = client2.RPC().Call(&b2, "eth_getBlockByNumber", "latest", false); err != nil {
-				t.Fatal("eth_getBlockByNumber call failed:", err)
-			}
-			t.Log("block1", b1.Number, "block2", b2.Number)
-		case <-timeout.C:
-			return
 		}
+	}(); err != nil {
+		t.Fatal("error while trying to get block", "err", err)
+	}
+	t.Log("start deploying dpos")
+	// start calling deploy dpos script
+	deployDPOS(t, client1)
+}
+
+func deployDPOS(t *hivesim.T, client *hivesim.Client) {
+	contractsDirectory, ok := os.LookupEnv("DPOS_DIR")
+	if !ok {
+		t.Fatal("cannot find DPOS_DIR environment")
+	}
+	cmd := exec.Command("yarn", "install")
+	cmd.Dir = contractsDirectory
+	stdout, _ := cmd.StdoutPipe()
+	err := cmd.Run()
+	scanner := bufio.NewReader(stdout)
+	for i := 0; i < scanner.Size(); i++ {
+		line, _, _ := scanner.ReadLine()
+		t.Log(string(line))
+	}
+	if err != nil {
+		t.Fatal("error while starting install npm", "err", err)
+	}
+
+	// create an .env file with privatekey of first validator and rpc of client1
+	// create .env file within DPOS dir
+	file, err := os.OpenFile(path.Join(contractsDirectory, ".env"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed creating file: %s", err.Error())
+	}
+	datawriter := bufio.NewWriter(file)
+	for _, data := range []string{
+		fmt.Sprintf("TESTNET_PK=0x%s", validators[0]["privateKey"]),
+		fmt.Sprintf("TESTNET_URL=http://%s:8545", client.Container),
+	} {
+		_, _ = datawriter.WriteString(data + "\n")
+	}
+	datawriter.Flush()
+	file.Close()
+
+	// run deploy script
+	cmd = exec.Command("/bin/sh", "./run.sh", "Migration__20231212_DeployTestnet", "-f", "ronin-testnet")
+	cmd.Dir = contractsDirectory
+	stdout, _ = cmd.StdoutPipe()
+	err = cmd.Run()
+	scanner = bufio.NewReader(stdout)
+	for i := 0; i < scanner.Size(); i++ {
+		line, _, _ := scanner.ReadLine()
+		t.Log(string(line))
+	}
+	if err != nil {
+		t.Fatal("error while starting run.sh", "err", err)
 	}
 }
